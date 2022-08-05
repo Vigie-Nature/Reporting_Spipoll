@@ -1,0 +1,829 @@
+---
+params:
+   new_title: "My Title!"
+title: "`r params$new_title`"
+author: "Charles Thévenin | Vigie-Nature"
+date: '2022-04-22'
+output: 
+  html_document: 
+  toc: true
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, 
+                      cache = FALSE,
+                      message = FALSE, 
+                      warning = FALSE
+                      )
+
+
+
+library(RMySQL)
+library(lubridate)
+library(sf)
+library(raster)
+library(dplyr)
+library(spData)
+library(spDataLarge)
+library(tmap)    # for static and interactive maps
+library(leaflet) # for interactive maps
+library(ggplot2) # tidyverse data visualization package
+library(gridExtra)
+library(cowplot)
+
+dt_user <- dt_spipoll %>% filter(user_pseudo == user)
+#Retirer les observations non identifiees mais validees
+dt_user_ident <- dt_user %>%  
+  filter(!((is.na(insecte_long_name) | 
+              insecte_long_name %in% 
+              c("Je ne sais pas", "Insecte inconnu")) & 
+             is.na(insecte_precision)))
+```
+
+<br>
+
+Ce document présente un résumé de votre participation au Spipoll depuis votre inscription au programme. Bonne lecture, et merci encore pour votre participation !
+
+<br>
+
+# **Chiffres clés**
+
+``` {r chiffres cles, echo = FALSE, message = FALSE}
+#Nombre de photos, collections et temps d'observation
+df1 <- dt_user %>%
+  summarise(
+    nb_taxons = nrow(dt_user),
+    non_identifie = nrow(dt_user %>%
+                           filter(((
+                             is.na(insecte_long_name) |
+                               insecte_long_name %in%
+                               c("Je ne sais pas", "Insecte inconnu")
+                           ) &
+                             is.na(insecte_precision)
+                           ))),
+    nb_taxons_uniques = nrow(
+      dt_user %>%
+        filter(!((
+          is.na(insecte_long_name) |
+            insecte_long_name %in%
+            c("Je ne sais pas", "Insecte inconnu")
+        ) &
+          is.na(insecte_precision)
+        )) %>%
+        filter(nb_validation == 3) %>%
+        distinct(insecte_long_name)
+    )
+  )
+
+
+
+#Nombre d'identifications non validees et validees
+df1$ident_non_validees <- nrow(dt_user_ident %>% 
+                                      filter(nb_validation!=3 | is.na(nb_validation)))
+df1$ident_validees <- nrow(dt_user_ident %>% 
+                                      filter(nb_validation==3))
+
+# A faire : % d'identifications modifiées après suggestion, et validées
+
+#résumé participation
+
+participation <- dt_user %>%
+  mutate(annee = year(collection_date)) %>%
+  group_by(annee) %>%
+  summarise(nb_collections = n_distinct(collection_id),
+            nb_collections_flash = n_distinct(collection_id[protocole_long == 0]),
+            nb_photos = (n_distinct(insecte_photo_1) + n_distinct(insecte_photo_2))) %>%
+  arrange(by_group = TRUE) %>%
+  ungroup()
+
+```
+Depuis votre première participation au Spipoll en **`r min(participation$annee)`**, vous avez réalisé **`r sum(participation$nb_collections)`** collections. 
+Vous avez réalisé **`r sum(participation$nb_collections_flash)`** collections suivant le protocole "flash" de 20 minutes, ce qui équivaut à **`r round(sum(participation$nb_collections_flash)*20/60, 1)`** heures d'observation cumulées !
+
+<br>
+
+**La synthèse de votre participation au programme :**
+
+
+* Nombre total d'interactions plante/pollinisateur observées : **`r df1$nb_taxons`**
+
+* Nombre moyen de visiteurs observés par collection : **`r round(df1$nb_taxons/sum(participation$nb_collections), 1)`**
+
+* Nombre de visiteurs non identifiés : **`r df1$non_identifie`**
+
+* Nombre de visiteurs identifiés mais non validés : **`r df1$ident_non_validees`**
+
+* Nombre de visiteurs identifiés et validés : **`r df1$ident_validees`**
+
+* Nombre de taxons différents photographiés et validés : **`r df1$nb_taxons_uniques`**
+
+<br>
+
+```{r topcollection, echo=FALSE, message=FALSE}
+#CHUNK AVEC results = "asis"
+
+#Collection avec le plus de taxons
+top_collection <- dt_user_ident %>% 
+  group_by(collection_id) %>% 
+  summarise(nb_taxons_tot = n(),
+            nom_collection = unique(collection_nom),
+            date_collection = unique(collection_date)) %>% 
+  ungroup() %>%
+  arrange(desc(nb_taxons_tot)) %>%
+  slice(1)
+
+#Collection avec le moins de taxons
+bottom_collection <- dt_user_ident %>% 
+  group_by(collection_id) %>% 
+  summarise(nb_taxons_tot = n(),
+            nom_collection = unique(collection_nom),
+            date_collection = unique(collection_date)) %>% 
+  ungroup() %>%
+  arrange(nb_taxons_tot) %>%
+  slice(1)
+```
+
+Au total, vous avez partagé **`r sum(participation$nb_photos)`** photos d'insectes et autres visiteurs sur le site, soit une moyenne de **`r round(sum(participation$nb_photos)/sum(participation$nb_collections), 0)`** photos par collection.
+
+Votre collection avec le plus de taxons observés : 
+la collection nommée **`r top_collection$nom_collection`**, effectuée le **`r day(top_collection$date_collection)`****/****`r month(top_collection$date_collection)`****/****`r year(top_collection$date_collection)`** avec un total de **`r top_collection$nb_taxons_tot`** interactions observées.
+
+Votre collection avec le moins de taxons observés : 
+la collection nommée **`r bottom_collection$nom_collection`**, effectuée le **`r day(bottom_collection$date_collection)`****/****`r month(bottom_collection$date_collection)`****/****`r year(bottom_collection$date_collection)`** avec un total de **`r bottom_collection$nb_taxons_tot`** interaction(s) observée(s).
+
+<br>
+
+# **Votre plan d'échantillonnage**
+
+<br>
+
+Cette partie a pour objectif de vous illustrer comment se structure votre effort d'échantillonnage : 
+
+* A quel moment de l'année effectuez-vous le plus de collections Spipoll ? 
+
+* Dans quelles régions se situent vos sessions d'observation ? 
+
+* Quelles sont les plantes que vous affectionnez le plus ? 
+
+* Parmi les plantes que vous choisissez, lesquelles apparaissent le moins dans l'ensemble des collections Spipoll ? etc...
+
+Ce résumé de votre participation vous fournira peut-être quelques pistes pour organiser vos prochaines sessions d'observation !
+
+<br>
+
+## Vos collections
+
+<br>
+
+### Nombre de collections par an
+
+Commençons par nous intéresser à la manière dont votre effort d'échantillonnage se distribue dans le temps. La figure ci-dessous vous indique la variation du nombre de collections par an depuis le lancement du programme en 2010.
+
+``` {r echo = FALSE, , message=FALSE, fig.align = "center", fig.height = 4, fig.width = 6}
+# ajouter toutes années comme niveaux de facteur pour la figure
+participation$annee <- factor(participation$annee, levels = seq(2010,year(Sys.Date()),1))
+
+le_plot <- participation %>%
+  ggplot(aes(x = annee, y = nb_collections)) +
+  geom_col(width = 0.5, colour = "darkblue", fill = "darkblue")+
+  theme_bw()+
+  labs(x = "Années",
+       y = "Nombre de collections") +
+  scale_y_continuous(breaks = scales::pretty_breaks(),
+                     expand = expansion(mult = c(0, .1)))+
+  scale_x_discrete(drop = FALSE)
+le_plot
+
+
+```
+
+<br>
+
+### Variation mensuelle de l'échantillonnage et phénologie
+
+Intéressons-nous maintenant à la variation de votre effort d'échantillonnage (en nombre de collections) en fonction des saisons. 
+
+Les graphiques ci-dessous représentent la distribution du nombre de collections effectuées par mois. La figure du haut résume votre participation, et la figure du bas résume la distribution mensuelle des collections pour l'ensemble des données Spipoll.
+
+```{r plan_echantillonnage, message = FALSE, echo = FALSE, fig.align = "center", fig.height = 4, fig.width = 8}
+
+
+##Répartition mensuelle des collections du participant VS la base de données
+#tableau de donnees
+collections_mensuel <- data.table::melt(
+  data.table::as.data.table(
+    dt_spipoll %>%
+      mutate(mois = month(collection_date)) %>%
+      group_by(mois) %>%
+      summarise('Spipoll' = n_distinct(collection_id),
+                'Participant'= length(unique(collection_id[user_pseudo == user])))),
+  id.vars = "mois") %>%
+  # modifier les noms des colonnes suite au melt
+  rename(type_donnees = variable,
+         nb_collections = value) %>%
+  # calcul des proportions de participation au mois
+  group_by(type_donnees) %>%
+  mutate(proportion = round(nb_collections/sum(nb_collections)*100, 1)) %>%
+  #passer les mois en facteur
+  mutate(mois = factor(mois, mois)) %>%
+  # ordonner les donnees par mois en ordre croissant
+  arrange(type_donnees, mois) %>%
+  ungroup()
+#Recoder les niveaux de facteur pour mettre le nom des mois
+collections_mensuel$mois <-  recode_factor(collections_mensuel$mois, 
+                                           "1" = "Janv",
+                                           "2" = "Fev",
+                                           "3" = "Mars",
+                                           "4" = "Avril",
+                                           "5" = "Mai",
+                                           "6" = "Juin",
+                                           "7" = "Juill",
+                                           "8" = "Aout",
+                                           "9" = "Sept",
+                                           "10" = "Oct",
+                                           "11" = "Nov",
+                                           "12" = "Dec")
+
+#plot données participant
+le_plot_participant <- collections_mensuel %>%
+  filter(type_donnees == "Participant") %>%
+  ggplot(aes(x = mois)) +
+  geom_col(aes(y = nb_collections), width = 0.8, colour = "#006C80", fill = "#006C80") +
+  theme_bw()+
+  labs(title = "Participant",
+       x = "Mois",
+       y = "Nombre de collections")+
+  scale_y_continuous(breaks = scales::pretty_breaks(),
+                     expand = expansion(mult = c(0, .1)))
+#plot données Spipoll
+le_plot_spipoll <- collections_mensuel %>%
+  filter(type_donnees == "Spipoll") %>%
+  ggplot(aes(x = mois)) +
+  geom_col(aes(y = nb_collections), width = 0.8, colour = "#FF3300", fill = "#FF3300") +
+  theme_bw()+
+  labs(title = "Spipoll",
+       x = "Mois",
+       y = "Nombre de collections")+
+  scale_y_continuous(breaks = scales::pretty_breaks(),
+                     expand = expansion(mult = c(0, .1)))
+#combiner les plots sur la même page, en alignant les axes des abscisses
+plot_grid(le_plot_participant,
+          le_plot_spipoll,
+          nrow = 2,
+          align = "v")
+
+# plot participation mensuelle V2
+# collections_mensuel <- dt_spipoll %>%
+#   mutate(mois = month(collection_date)) %>%
+#   group_by(mois) %>%
+#   summarise('Spipoll' = n_distinct(collection_id),
+#             'Participant'= length(unique(collection_id[user_pseudo == user]))) %>%
+#   mutate('prop_Spipoll' = round(Spipoll/sum(Spipoll)*100, 2),
+#          'prop_Participant' = round(Participant/sum(Participant)*100, 2))
+# 
+# le_plot <- ggplot(collections_mensuel, aes(x = mois)) +
+#   geom_area(aes(y = prop_Spipoll), fill = "#999999", 
+#             color = "#99999999", alpha=0.5) +
+#   geom_area(aes(y = prop_Participant), fill = "#E69F00",
+#             color = "#E69F00", alpha=0.5)
+# le_plot
+```
+
+<br>
+
+Pourquoi s'intéresser à la distribution mensuelle de vos collections ? Parce que cette dernière peut vous permettre de mieux comprendre la distribution taxonomique au sein de vos observations.
+
+<br>
+
+Nous allons en effet nous intéresser ici à la **phénologie**, c'est-à-dire l'étude des rythmes de vie des plantes, des champignons et des animaux. Les plantes et les pollinisateurs montrent en effet de fortes variations saisonnières dans leur activité, ainsi le timing de vos observations va influencer la diversité et l'abondance des visiteurs photographiés.
+
+En utilisant l'ensemble des données Spipoll à l'échelle nationale, il est possible de suivre les variations saisonnières dans l'activité des insectes pollinisateurs !
+
+Pour ce faire, commençons par répartir les pollinisateurs photographiés en 7 grands groupes taxonomiques : : les **Diptères** (mouches), les **Hyménoptères** (abeilles, bourdons ou guêpes), les **Lépidoptères** (papillons de jour et de nuit), les **Coléoptères** (scarabées), les **Hémiptères**, les **Arachnides** et enfin le reste des espèces dans un groupe **Autres**.
+
+Les figures suivantes vous montrent comment la proportion de chacun des 7 groupes au sein de l'ensemble des observations à l'échelle nationale varie selon les saisons. Chacune des figures vous indique la proportion d'un groupe d'espèces donnés au sein de l'ensemble des observations à l'échelle nationale à un mois donné.
+
+Les deux figures fournissent la même information, mais de manières différentes :
+
+* La première figure représente les proportions de chacun des groupes dans les données nationales au travers de surfaces de couleur qui se superposent pour arriver à un total de 100%, permettant ainsi de comparer facilement les groupes d'espèces entre eux.
+
+* La seconde figure représente également la variation de la proportion des observations pour chaque groupe, mais cette fois-ci en fournissant directement la valeur. Les points vous indiques la proportion d'un groupe à un mois donné, et les courbes de couleur permettent de mieux identifier les groupes d'espèces. 
+
+```{r taxo_mensuelle1, message = FALSE, echo = FALSE, fig.align = "center"}
+## Variations mensuelles des observations par grands groupes taxonomiques
+# résumé des interactions au groupe taxo ramenées au mois
+taxo_mensuel <- dt_spipoll  %>%
+  filter(nb_validation == 3, !is.na(insecte_ordre)) %>%
+  mutate(mois = month(collection_date)) %>%
+  group_by(mois, groupes) %>%
+  summarise(nb_observations = n()) %>%
+  mutate(percentage = nb_observations/sum(nb_observations)) %>%
+  arrange(nb_observations) %>%
+  mutate(groupes = factor(groupes, groupes))
+```
+
+Prenons un exemple précis. Au mois de mai on peut noter que les Hyménoptères représentent `r round(taxo_mensuel %>% filter(groupes == "Hyménoptères", mois == 5) %>% pull(percentage), 2)*100`% des pollinisateurs observés dans les collections Spipoll. Toujours au mois de mai on peut voir que les Diptères et les Coléoptères représentent respectivement `r round(taxo_mensuel %>% filter(groupes == "Diptères", mois == 5) %>% pull(percentage), 2)*100`% et `r round(taxo_mensuel %>% filter(groupes == "Coléoptères", mois == 5) %>% pull(percentage), 2)*100`% des pollinisateurs observés.
+
+
+
+```{r taxo_mensuelle2, message = FALSE, echo = FALSE, fig.align = "center"}
+## Variations mensuelles des observations par grands groupes taxonomiques
+
+# palette de couleur du Spipoll, manuellement assignée aux 7 groupes (non utilisé ici)
+palette_spipoll <- c("Diptères" = "#FF3300",
+                     "Hyménoptères" = "#B5F500",
+                     "Coléoptères" = "#D5002A",
+                     "Lépidoptères" = "#FFE800",
+                     "Hemiptères" = "#006C80",
+                     "Arachnides" = "#4D0059",
+                     "Autres" = "#333333")
+
+# Plot de la phénologie des grands groupes de visiteurs (stacked areas)
+le_plot_taxo <- ggplot(taxo_mensuel, aes(x=mois, y=percentage, fill=groupes)) + 
+  geom_area(size=0.5, colour="black", alpha = 0.5)+
+  labs(title = "Groupes taxonomiques",
+         y = "Proportion des observations totales",
+         x = "Mois",
+       fill = "Groupes") +
+  scale_fill_manual(values = palette_spipoll) + 
+  scale_x_continuous(
+    breaks = seq_along(month.name), 
+    labels = c("Janv", "Fev", "Mars", "Avril", "Mai", "Juin", "Juill", "Aout", "Sept", "Oct",  "Nov", "Dec"),
+    expand = c(0, 0))+ 
+  scale_y_continuous(labels = scales::percent,
+                     expand = c(0, 0))+
+  theme_bw() +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title.x = element_blank(),
+    title = element_text(size = 13),
+    legend.background = element_rect(fill = "white", color = "black"),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10))
+le_plot_taxo
+
+
+# Plot de la phénologie des grands groupes de visiteurs (lines & points)
+le_plot_taxo <- ggplot(taxo_mensuel, aes(x=mois, y=percentage, colour=groupes)) + 
+  geom_line(size = 0.8)+
+  geom_point(size = 1.5)+
+  labs(title = "Groupes taxonomiques",
+         y = "Proportion des observations totales",
+         x = "Mois",
+       colour = "Groupes") +
+  scale_colour_manual(values = palette_spipoll) + 
+  scale_x_continuous(
+    breaks = seq_along(month.name), 
+    labels = c("Janv", "Fev", "Mars", "Avril", "Mai", "Juin", "Juill", "Aout", "Sept", "Oct",  "Nov", "Dec"),
+    expand = c(0, 0))+ 
+  scale_y_continuous(labels = scales::percent,
+                     expand = c(0, 0))+
+  theme_bw() +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title.x = element_blank(),
+    title = element_text(size = 13),
+    legend.background = element_rect(fill = "white", color = "black"),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10))
+le_plot_taxo
+
+
+```
+
+Ces graphiques vous permettent de répondre aux questions suivantes :
+
+* Quel groupe d'espèces est le plus représenté dans les collections hivernales ?
+
+* A quel moment de l'année les Hyménoptères commencent à être le groupe le plus observé ?
+
+* A quel mois les Coléoptères semblent être au pic de leur présence/activité ?
+
+* A quel mois les Lépidoptères semblent être au pic de leur présence/activité ?
+
+Ainsi, en comparant la répartition de vos collections dans l'année aux données d'observation des groupes taxonomiques vous pourrez mieux comprendre la distribution taxonomique de vos observations (rendez-vous dans la section "Vos observations").
+
+<br>
+
+### Distribution spatiale de vos collections
+
+Enfin, nous allons nous concentrer sur la **distribution spatiale** de vos sessions d'observations.
+
+
+Les cartes ci-dessous représentent la distribution de vos collections dans l'espace suivant différentes périodes du programme. Les points violets représentent les localisations des collections de l'ensemble des données Spipoll, et vos collections sont affichées en rouge.
+
+``` {r carto_participation, include=FALSE, echo = FALSE, message = FALSE, fig.align = "center", fig.height = 8, fig.width = 8}
+#carto des collections, et répartition des données Spipoll
+# import fond de carte
+carte_france = sf::read_sf("maps/metropole-version-simplifiee.geojson")
+carte_regions = sf::read_sf("maps/regions-version-simplifiee.geojson")
+carte_departements = sf::read_sf("maps/departements-version-simplifiee.geojson")
+
+
+#liste contenant les differentes cartes
+les_maps <- list()
+#incrément pour liste de cartes
+a=1
+#Boucle pour afficher les cartes de distribution des collections en France suivant des périodes de 4 ans
+for(i in unique(levels(dt_spipoll$periode)))
+{
+  #ajout du fond de carte de la France comme base
+  la_carte <- tm_shape(carte_france) +
+    tm_borders(lwd = 1, col = "grey") +
+    #ajout couche departements
+    tm_shape(carte_departements) + 
+    tm_borders(lwd = 1, col = "grey") +
+    tm_shape(carte_france) +
+    tm_borders(lwd = 1, col = "black") +
+    #ajout des points pour les collections du Spipoll sur la periode i
+    tm_shape(sf::st_as_sf(na.omit(dt_spipoll %>% 
+                                    filter(periode == i) %>%
+                                    distinct(collection_id,
+                                             latitude,
+                                             longitude)),
+                          coords = c("longitude", 
+                                     "latitude"),
+                          crs = 4326)) +
+    tm_dots(col = "darkorchid4") +
+    #ajout titre  
+    tm_layout(title= paste(min(dt_spipoll$annee[dt_spipoll$periode == i]),
+                           max(dt_spipoll$annee[dt_spipoll$periode == i]),
+                           sep="-"), 
+              title.position = c('left', 'bottom'))
+  
+  #bloc conditionnel pour ajouter la couche participant uniquement s'il existe des collections sur la periode i
+  if(nrow(dt_user %>% 
+          filter(periode == i)) > 0){
+    la_carte <- la_carte +
+      #ajout de points rouges pour les collections du participant sur la periode i
+      tm_shape(sf::st_as_sf(na.omit(dt_user %>% 
+                                      filter(periode == i) %>%
+                                      distinct(collection_id,  
+                                               latitude, 
+                                               longitude)),
+                            coords = c("longitude",
+                                       "latitude"),
+                            crs = 4326)) +
+      tm_dots(col = "red", size = 0.5)
+  }
+  #on ajoute la nouvelle carte à la liste, en modifiant le type d'objet pour le grid.arrange ensuite qui permettra d'afficher simultanément plusieurs cartes
+  les_maps[[a]] <- tmap_grob(la_carte)
+  a=a+1
+}
+
+
+```
+
+``` {r carto_participation2,echo = FALSE, message = FALSE, fig.align = "center", fig.height = 8, fig.width = 8}
+
+#combiner les cartes dans une même page
+grid.arrange(grobs = les_maps, ncol = 2)
+```
+
+<br>
+
+## Les plantes échantillonnées
+
+Au cours de vos sessions d'observation, vous avez sélectionné **`r n_distinct(dt_user$plante_long_name)`** espèces ou groupes d'espèces de plantes différents.
+
+<br>
+
+Le tableau ci-dessous vous fournit le classement des **5 plantes les plus présentes dans vos collections** :
+
+``` {r plantes1, echo = FALSE, fig.align = "center", fig.height = 4, fig.width = 3}
+#Résumé du nombre de collections par espèce de plante
+obs_plantes <- dt_user %>% 
+  filter(!plante_long_name %in% c("Je ne sais pas", NA, "Plante inconnue")) %>%
+  group_by(plante_long_name) %>%
+  #obtenir le nombre total d'observations par taxon
+  summarise(nb_observations = n_distinct(collection_id)) %>%
+  ungroup()
+
+#Top 5 des plantes les plus observées
+knitr::kable(obs_plantes %>%
+               arrange(desc(nb_observations)) %>%
+               slice_head(n = 5),
+             col.names = c("Espèce ou groupe d'espèces",
+                           "Nombre d'observations"))
+
+```
+
+<br>
+
+Le tableau ci-dessous vous indique **les 3 plantes les plus rares au sein de vos collections** :
+
+
+``` {r plantes2, echo = FALSE, fig.align = "center", fig.height = 4, fig.width = 3}
+#Top 3 des plantes les plus rares des collections
+knitr::kable(obs_plantes %>%
+               arrange(nb_observations) %>%
+               slice_head(n = 3) ,
+             col.names = c("Espèce ou groupe d'espèces",
+                           "Nombre d'observations"))
+
+```
+
+<br>
+
+**Comparaison aux données du Spipoll**
+```{r plantes3, echo = FALSE, message = FALSE}
+#collections où l'espèce de plante est identifiée
+tot_coll_spipoll <- nrow(dt_spipoll %>% 
+                          distinct(collection_id))
+
+tot_coll_spipoll_plante_id <- nrow(dt_spipoll %>% filter(!is.na(plante_long_name)) %>%
+       filter(plante_long_name != "Plante inconnue") %>%
+       filter(plante_long_name != "Je ne sais pas") %>% 
+       distinct(collection_id))
+```
+
+Nous allons nous intéresser à l'ensemble des collections Spipoll, mais en nous concentrant **uniquement sur les collections pour lesquelles la plante a été identifiée** (espèce ou groupes d'espèces).
+
+Cela représente **`r tot_coll_spipoll_plante_id`** collections parmi l'ensemble des **`r tot_coll_spipoll`** collections réalisées depuis 2010.
+
+<br>
+
+* Quelle est l'espèce de plante parmi vos collections qui apparaît le plus rarement au sein de l'ensemble des données Spipoll ?
+
+```{r plantes4, echo = FALSE, message = FALSE}
+#La plante observée par le participant qui est la plus rare dans les données Spipoll
+plante_rare_obs <- dt_spipoll %>%
+  filter(!is.na(plante_long_name)) %>%
+  filter(plante_long_name != "Plante inconnue") %>%
+  filter(plante_long_name != "Je ne sais pas") %>% 
+  #grouper par espece de plante
+  group_by(plante_long_name) %>%
+  #obtenir le nombre total d'observations par taxon
+  summarise(nb_observations_spipoll = n_distinct(collection_id)) %>%
+  ungroup() %>%
+  #ne conserver que les espèces qui apparaissent dans les collections du participant
+  filter(plante_long_name %in% 
+           unique(dt_user$plante_long_name)) %>%
+  #recuperer l'espèce la moins observée
+  arrange(nb_observations_spipoll) %>%
+  slice_head(n = 1)
+
+
+```
+Il s'agît de **`r plante_rare_obs$plante_long_name`**, qui apparaît dans **`r plante_rare_obs$nb_observations_spipoll`** collection(s) sur l'ensemble des `r tot_coll_spipoll_plante_id` collections réalisées pour lesquelles la plante a été identifiée !
+
+<br>
+
+* Quelles sont **les plantes que vous n'avez jamais échantillonné**, mais qui apparaissent neanmoins dans de nombreuses collections de Spipolliens ?
+
+Le tableau ci-dessous vous indique les 5 plantes les plus échantillonnées à l'échelle nationale mais qui n'apparaissent pas encore dans vos collections.
+```{r plantes5, echo = FALSE, message = FALSE}
+#La plante observée par le participant qui est la plus rare dans les données Spipoll
+plantes_communes_spipoll <- dt_spipoll %>%
+  filter(!is.na(plante_long_name)) %>%
+  filter(plante_long_name != "Plante inconnue") %>%
+  filter(plante_long_name != "Je ne sais pas") %>%  
+  #grouper par espece de plante
+  group_by(plante_long_name) %>%
+  #obtenir le nombre total d'observations par taxon
+  summarise(nb_observations_spipoll = n_distinct(collection_id),
+            pourcentage_spipoll = round(100*n_distinct(collection_id)/tot_coll_spipoll_plante_id,1)) %>%
+  ungroup() %>%
+  #ne conserver que les espèces qui apparaissent dans les collections du participant
+  filter(plante_long_name %in% 
+           unique(dt_user$plante_long_name)) %>%
+  #recuperer l'espèce la moins observée
+  arrange(desc(nb_observations_spipoll)) %>%
+  slice_head(n = 5)
+
+
+#afficher le tableau des espèces jamais observées
+knitr::kable(na.omit(plantes_communes_spipoll),
+             col.names = c("Plante", 
+                           "Nombre d'observations au sein des données Spipoll",
+                           "Pourcentage du total des collections nationales"))
+
+```
+
+
+
+
+
+
+<br>
+
+# **Vos observations**
+
+## Les pollinisateurs et autres visiteurs les plus photographiés
+
+Le tableau ci-dessous vous fournit **la liste des 10 taxons les plus fréquents** dans vos collections, ordonnés par le nombre total d'observations.
+
+
+```{r top_insecte, echo=FALSE}
+#Top 10 des taxons les plus observés
+obs_insectes <- dt_user_ident %>% 
+  filter(user_pseudo == user) %>%
+  #ne considerer que les validations certaines (sans regarder les social_events)
+  filter(is.na(nb_suggestion) | nb_suggestion == 0) %>%
+  filter(nb_validation == 3) %>%
+  #retirer les taxons non identifies
+  filter(!insecte_long_name %in% c("Je ne sais pas", NA, "Insecte inconnu")) %>%
+  group_by(insecte_long_name) %>%
+  #obtenir le nombre total d'observations par taxon
+  summarise(nb_observations = n()) %>%
+  ungroup()
+  
+
+knitr::kable(obs_insectes %>%
+               arrange(desc(nb_observations)) %>%
+               slice_head(n = 10), 
+             col.names = c("Espèce ou groupe d'espèces",
+                           "Nombre d'observations"))
+
+
+
+#TEST VISUALISATION EN BAR PL0T
+#réorganiser les niveaux de facteur pour la figure en coord_flip()
+  #arrange(nb_observations) %>%
+  #mutate(insecte_long_name=factor(insecte_long_name, insecte_long_name))
+#nombre d'observations pour le taxon le plus observé
+# max_obs <- max(obs_insectes$nb_observations)
+# 
+# le_plot <- obs_insectes%>%
+#     ggplot(aes(x = insecte_long_name, y = nb_observations))+
+#     geom_col(colour="dodgerblue3", 
+#              fill="dodgerblue3",
+#              width = 0.5)+
+#     coord_flip()+
+#     theme_bw()+
+#     labs(x = "Espèce / Groupe d'espèces",
+#          y = "Nombre total d'individus observés")+
+#     geom_text(aes(label=nb_observations), 
+#               hjust=-.25, 
+#               color="black")+
+#     theme(title = element_text(size = 10),
+#           axis.title.y=element_blank(),
+#           axis.title.x=element_text(size=12),
+#           axis.text = element_text(size = 10, colour = "black"))+
+#     scale_y_continuous(expand = expansion(add = c(0, 0.08*max_obs)))
+#le_plot
+
+```
+
+<br>
+
+## Les pollinisateurs et autres visiteurs les moins photographiés
+
+Le tableau ci-dessous vous fournit **la liste des 3 taxons les moins fréquents** dans vos collections, ordonnés par le nombre total d'observations.
+```{r bottom_insecte, echo=FALSE}
+
+knitr::kable(obs_insectes %>%
+               arrange(nb_observations) %>%
+               slice_head(n = 3), 
+             col.names = c("Espèce ou groupe d'espèces",
+                           "Nombre d'observations"))
+
+```
+
+
+<br>
+
+## Distribution taxonomique de vos observations
+
+Le tableau ci-dessous indique la **répartition de vos observations au sein des 7 grands groupes taxonomiques** : les Diptères (mouches), les Hyménoptères (abeilles, bourdons ou guêpes), les Lépidoptères (papillons de jour et de nuit), les Coléoptères (scarabées), les Hémiptères, les Arachnides ou autres.
+
+```{r tableau_taxo_insectes, echo=FALSE}
+#Distribution taxonomique des obs dans l'ensemble des données Spipoll (taxons valides)
+taxo_comparaison <- data.table::melt(data.table::as.data.table(dt_spipoll %>% 
+  filter(nb_validation == 3, !is.na(insecte_ordre)) %>%
+  group_by(groupes) %>%
+  summarise('Spipoll' = n(),
+            'Participant'= sum(user_pseudo == user))),
+  id.vars = "groupes") %>%
+  # modifier les noms des colonnes suite au melt
+  rename(type_donnees = variable,
+         nb_observations = value) %>%
+  # rearranger les niveaux de facteurs pour la figure
+  group_by(type_donnees) %>%
+  mutate(proportion = round(nb_observations/sum(nb_observations)*100, 1)) %>%
+  arrange(desc(nb_observations)) %>%
+  mutate(groupes = factor(groupes, groupes)) %>%
+  ungroup()
+#afficher le tableau de la distribution taxo de l'utilisateur
+knitr::kable(na.omit(taxo_comparaison %>% 
+                       filter(type_donnees == "Participant") %>%
+                       select(groupes,
+                              nb_observations,
+                              proportion)),
+             col.names = c("Groupes", "Nombre total d'observations", "Proportion (en %)"))
+```
+
+<br>
+
+La figure ci-dessous vous permet de **comparer la distribution de vos observations par rapport à l'ensemble des données du Spipoll**. 
+
+La figure se lit à la manière d'un camembert : chacun des 7 groupes taxonomique est représenté comme une proportion du total des observations. Ainsi la somme des proportions des différents groupes dans une colonne est égale à 100%. La colonne de gauche représente la distribution des données nationales (noté "Spipoll") et la colonne de droite représente la distribution de vos observations (noté "Participant").
+
+Prenons comme exemple la colonne de gauche qui représente la distribution taxonomique pour l'ensemble des données (noté "Spipoll"). On peut alors voir que les Hyménoptères représentent `r taxo_comparaison %>% filter(type_donnees == "Spipoll", groupes == "Hyménoptères") %>% pull(proportion)`% des observations totales du Spipoll à l'échelle nationale.
+
+Vous pouvez ainsi comparer la distribution de vos observations. Certains groupes sembent-ils aparaître plus (ou moins) au sein de vos observations par rapport à la moyenne nationale ?
+
+```{r figure_taxo_comparaison, echo = FALSE, message = FALSE, fig.align = "center", fig.height = 6, fig.width = 6}
+
+
+#stacked bar plot pour comparer la distribution des obs vs les données nationales
+le_plot <- taxo_comparaison %>% ggplot(aes(x = type_donnees, y = nb_observations, fill = groupes)) +
+  geom_bar(position = "fill", stat = "identity")+
+  labs(title = "Distribution taxonomique des observations",
+       y = "Proportion du total d'observations",
+       fill = "Groupes") +
+  theme_bw() +
+  theme(
+    axis.text = element_text(size = 12),
+    axis.title.x = element_blank(),
+    title = element_text(size = 16),
+    legend.background = element_rect(fill = "white", color = "black"),
+    legend.title = element_text(size = 15),
+    legend.text = element_text(size = 12))
+le_plot
+
+#autre possibilité : parallel stacked bar chart
+#autre possiblité : grouped stacked bar chart
+
+```
+
+<br>
+
+
+  ## A vos appareils !
+
+<br>
+
+Que vous reste-t-il à découvrir ?
+
+Quels sont **les taxons que vous n'avez jamais observés**, mais qui apparaissent neanmoins dans de nombreuses collections de Spipolliens ?
+
+Le tableau ci-dessous vous indique les 20 taxons les plus observés dans les données du Spipoll à l'échelle nationale mais qui n'apparaissent pas encore dans vos collections.
+
+Pour cette sélection nous ne considérons que les taxons identifiés et validés, et pour lesquels l'identification se fait au niveau du genre ou de l'espèce.
+
+```{r non_observes, echo = FALSE, message = FALSE}
+#Les 20 taxons les plus observés dans la bdd que le participant n'a jamais observé
+non_observes <- dt_spipoll %>% 
+  #ne considérer que les espèces n'ayant jamais été observées par le participant
+  filter(!insecte_long_name %in% 
+           unique(dt_user$insecte_long_name)) %>%
+  #ne considerer les taxons au genre ou à l'espèce
+  filter(insecte_rang %in% c("ES", "GN")) %>%
+  #ne considerer que les validations certaines (sans regarder les social_events)
+  filter(is.na(nb_suggestion) | nb_suggestion == 0) %>%
+  filter(nb_validation == 3) %>%
+  #retirer les taxons non identifies
+  filter(!insecte_long_name %in% 
+           c("Je ne sais pas", NA, "Insecte inconnu")) %>%
+  group_by(insecte_long_name) %>%
+  #obtenir le nombre total d'observations par taxon
+  summarise(nb_observations = n()) %>%
+  ungroup() %>%
+  #recuperer les 20 espèces les plus observées
+  arrange(desc(nb_observations)) %>%
+  slice_head(n = 20)
+
+#afficher le tableau des espèces jamais observées
+knitr::kable(na.omit(non_observes),
+             col.names = c("Taxon (identification à l'espèce ou au genre)", 
+                           "Nombre d'observations au sein des données Spipoll"))
+
+```
+
+<br>
+
+Le tableau ci-dessous vous indique quels sont les taxons parmi vos collections qui sont les plus rares à l'échelle de l'ensemble des données du Spipoll.
+
+
+
+```{r raretes, echo = FALSE, message = FALSE}
+#Les 3 taxons les plus rares observés par le participant
+taxons_rares <- dt_spipoll %>% 
+  #ne considérer que les espèces ayant été observées par le participant
+  filter(insecte_long_name %in% 
+           unique(dt_user$insecte_long_name)) %>%
+  #ne considerer que les validations certaines (sans regarder les social_events)
+  filter(is.na(nb_suggestion) | nb_suggestion == 0) %>%
+  filter(nb_validation == 3) %>%
+  #retirer les taxons non identifies
+  filter(!insecte_long_name %in% 
+           c("Je ne sais pas", NA, "Insecte inconnu")) %>%
+  group_by(insecte_long_name) %>%
+  #obtenir le nombre total d'observations par taxon
+  summarise(nb_observations = n()) %>%
+  ungroup() %>%
+  #recuperer les 3 espèces les moins observées
+  arrange(nb_observations) %>%
+  slice_head(n = 3)
+
+#afficher le tableau des espèces jamais observées
+knitr::kable(na.omit(taxons_rares),
+             col.names = c("Taxon (identification à l'espèce ou au genre)", 
+                           "Nombre d'observations au sein des données Spipoll"))
+
+```
+
+
+
