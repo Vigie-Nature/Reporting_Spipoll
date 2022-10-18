@@ -3,4 +3,6 @@
 .RData
 .Ruserdata
 /fonctions.function_import_from_mosaic
-/maps
+/reporting
+carto_template.rmd
+tests_maps.r
